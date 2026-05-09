@@ -126,11 +126,16 @@ class CatalogRetriever:
         """
         Return top_k catalog items ranked by cosine similarity to query.
 
-        Uses multi-query expansion: scores each word-group sub-query independently
-        and takes the element-wise max, so partial matches on individual skills
-        (e.g. 'java' OR 'stakeholder communication') each contribute fully.
+        Uses multi-query expansion + name-match boost:
+        - Multi-query expansion takes element-wise max across sub-queries so
+          partial skill matches each contribute at full strength.
+        - Name-match boost strongly up-ranks items whose NAME contains query
+          keywords (e.g. 'Java 8' for a Java developer query).
         """
         scores = self._multi_query_scores(query)
+
+        # Name-match boost — highest weight: title match is the strongest signal
+        scores = scores + self._name_boost(query) * 0.40
 
         # Soft boosts — do not hard-exclude, just up-rank matching items
         if job_level_filter:
@@ -148,7 +153,7 @@ class CatalogRetriever:
 
     def _multi_query_scores(self, query: str) -> np.ndarray:
         """
-        Split the query into up to 4 overlapping sub-queries and take the
+        Split the query into up to 5 overlapping sub-queries and take the
         element-wise max of cosine similarity scores across all sub-queries.
         This prevents long compound queries from diluting individual term signals.
         """
@@ -162,7 +167,7 @@ class CatalogRetriever:
         # Add individual content words (skip very short tokens)
         content_words = [t for t in tokens if len(t) > 3]
         if content_words:
-            # Chunk into pairs for bigram coverage
+            # Chunk into 3-word groups for bigram coverage
             for i in range(0, len(content_words), 2):
                 chunk = " ".join(content_words[i:i+3])
                 if chunk not in sub_queries:
@@ -175,6 +180,34 @@ class CatalogRetriever:
         sim_matrix = cosine_similarity(q_matrix, self._matrix)  # (n_queries, n_docs)
         # Element-wise max across all sub-queries
         return sim_matrix.max(axis=0)
+
+    def _name_boost(self, query: str) -> np.ndarray:
+        """
+        Strong boost for items whose NAME contains one or more content words
+        from the query. Each matching word adds 1.0 to the boost.
+        E.g. 'Java 8 (New)' and 'Core Java' both get boosted for a Java query.
+        This prevents generic description matches (like Ruby's 'developer') from
+        outranking direct name matches.
+        """
+        # Extract meaningful words (len > 2, not stopwords)
+        stopwords = {"the", "and", "for", "with", "that", "this", "are", "from",
+                     "have", "has", "need", "who", "what", "how", "hiring",
+                     "year", "years", "level", "developer", "engineer", "role"}
+        tokens = [
+            t.strip(".,;:").lower()
+            for t in query.lower().split()
+            if len(t) > 2 and t.lower() not in stopwords
+        ]
+        if not tokens:
+            return np.zeros(len(self._items))
+
+        boost = np.zeros(len(self._items))
+        for i, item in enumerate(self._items):
+            name_lower = item["name"].lower()
+            # Count how many query tokens appear in the assessment name
+            matches = sum(1 for t in tokens if t in name_lower)
+            boost[i] = float(matches)
+        return boost
 
     def get_by_name(self, name: str) -> Optional[dict]:
         """Exact-ish lookup by assessment name (case-insensitive)."""
