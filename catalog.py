@@ -134,8 +134,10 @@ class CatalogRetriever:
         """
         scores = self._multi_query_scores(query)
 
-        # Name-match boost — highest weight: title match is the strongest signal
-        scores = scores + self._name_boost(query) * 0.40
+        # Name-match boost — up-ranks items whose NAME contains query keywords
+        # Weight 0.25 per matching word: strong enough to prefer Java tests for
+        # a Java query, but not so dominant that SQL/other skills get buried.
+        scores = scores + self._name_boost(query) * 0.25
 
         # Soft boosts — do not hard-exclude, just up-rank matching items
         if job_level_filter:
